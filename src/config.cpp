@@ -37,11 +37,13 @@
 
 #define MINFREESPACE_DEFAULT (4294967295ULL)
 
-using std::string;
-
 #define IFERT(S) if(S == s_) return true
 
 const std::string CONTROLFILE = "/.mergerfs";
+constexpr static const char CACHE_FILES_PROCESS_NAMES_DEFAULT[] =
+  "rtorrent|"
+  "qbittorrent-nox";
+
 
 Config Config::_singleton;
 
@@ -53,6 +55,7 @@ namespace l
   readonly(const std::string &s_)
   {
     IFERT("async_read");
+    IFERT("branches-mount-timeout");
     IFERT("cache.symlinks");
     IFERT("cache.writeback");
     IFERT("fsname");
@@ -60,7 +63,13 @@ namespace l
     IFERT("mount");
     IFERT("nullrw");
     IFERT("pid");
+    IFERT("pin-threads");
+    IFERT("process-thread-count");
+    IFERT("process-thread-queue-depth");
+    IFERT("read-thread-count");
     IFERT("readdirplus");
+    IFERT("scheduling-priority");
+    IFERT("srcmounts");
     IFERT("threads");
     IFERT("version");
 
@@ -73,9 +82,11 @@ Config::Config()
     auto_cache(false),
     minfreespace(MINFREESPACE_DEFAULT),
     branches(minfreespace),
+    branches_mount_timeout(0),
     cache_attr(1),
     cache_entry(1),
     cache_files(CacheFiles::ENUM::LIBFUSE),
+    cache_files_process_names(CACHE_FILES_PROCESS_NAMES_DEFAULT),
     cache_negative_entry(0),
     cache_readdir(false),
     cache_statfs(0),
@@ -89,93 +100,111 @@ Config::Config()
     fuse_msg_size(FUSE_MAX_MAX_PAGES),
     ignorepponrename(false),
     inodecalc("hybrid-hash"),
+    lazy_umount_mountpoint(false),
     link_cow(false),
     link_exdev(LinkEXDEV::ENUM::PASSTHROUGH),
     log_metrics(false),
-    mount(),
+    mountpoint(),
     moveonenospc(false),
     nfsopenhack(NFSOpenHack::ENUM::OFF),
     nullrw(false),
+    parallel_direct_writes(false),
     pid(::getpid()),
     posix_acl(false),
-    readdir(ReadDir::ENUM::POSIX),
+    readahead(0),
+    readdir("seq"),
     readdirplus(false),
     rename_exdev(RenameEXDEV::ENUM::PASSTHROUGH),
+    scheduling_priority(-10),
     security_capability(true),
     srcmounts(branches),
     statfs(StatFS::ENUM::BASE),
     statfs_ignore(StatFSIgnore::ENUM::NONE),
     symlinkify(false),
     symlinkify_timeout(3600),
-    threads(0),
+    fuse_read_thread_count(0),
+    fuse_process_thread_count(-1),
+    fuse_process_thread_queue_depth(0),
+    fuse_pin_threads("false"),
     version(MERGERFS_VERSION),
     writeback_cache(false),
-    xattr(XAttr::ENUM::PASSTHROUGH)
+    xattr(XAttr::ENUM::PASSTHROUGH),
+    _initialized(false)
 {
-  _map["async_read"]           = &async_read;
-  _map["auto_cache"]           = &auto_cache;
-  _map["branches"]             = &branches;
-  _map["cache.attr"]           = &cache_attr;
-  _map["cache.entry"]          = &cache_entry;
-  _map["cache.files"]          = &cache_files;
-  _map["cache.negative_entry"] = &cache_negative_entry;
-  _map["cache.readdir"]        = &cache_readdir;
-  _map["cache.statfs"]         = &cache_statfs;
-  _map["cache.symlinks"]       = &cache_symlinks;
-  _map["cache.writeback"]      = &writeback_cache;
-  _map["category.action"]      = &category.action;
-  _map["category.create"]      = &category.create;
-  _map["category.search"]      = &category.search;
-  _map["direct_io"]            = &direct_io;
-  _map["dropcacheonclose"]     = &dropcacheonclose;
-  _map["follow-symlinks"]      = &follow_symlinks;
-  _map["fsname"]               = &fsname;
-  _map["func.access"]          = &func.access;
-  _map["func.chmod"]           = &func.chmod;
-  _map["func.chown"]           = &func.chown;
-  _map["func.create"]          = &func.create;
-  _map["func.getattr"]         = &func.getattr;
-  _map["func.getxattr"]        = &func.getxattr;
-  _map["func.link"]            = &func.link;
-  _map["func.listxattr"]       = &func.listxattr;
-  _map["func.mkdir"]           = &func.mkdir;
-  _map["func.mknod"]           = &func.mknod;
-  _map["func.open"]            = &func.open;
-  _map["func.readlink"]        = &func.readlink;
-  _map["func.removexattr"]     = &func.removexattr;
-  _map["func.rename"]          = &func.rename;
-  _map["func.rmdir"]           = &func.rmdir;
-  _map["func.setxattr"]        = &func.setxattr;
-  _map["func.symlink"]         = &func.symlink;
-  _map["func.truncate"]        = &func.truncate;
-  _map["func.unlink"]          = &func.unlink;
-  _map["func.utimens"]         = &func.utimens;
-  _map["fuse_msg_size"]        = &fuse_msg_size;
-  _map["ignorepponrename"]     = &ignorepponrename;
-  _map["inodecalc"]            = &inodecalc;
-  _map["kernel_cache"]         = &kernel_cache;
-  _map["link_cow"]             = &link_cow;
-  _map["link-exdev"]           = &link_exdev;
-  _map["log.metrics"]          = &log_metrics;
-  _map["minfreespace"]         = &minfreespace;
-  _map["mount"]                = &mount;
-  _map["moveonenospc"]         = &moveonenospc;
-  _map["nfsopenhack"]          = &nfsopenhack;
-  _map["nullrw"]               = &nullrw;
-  _map["pid"]                  = &pid;
-  _map["posix_acl"]            = &posix_acl;
-  //  _map["readdir"]              = &readdir;
-  _map["readdirplus"]          = &readdirplus;
-  _map["rename-exdev"]         = &rename_exdev;
-  _map["security_capability"]  = &security_capability;
-  _map["srcmounts"]            = &srcmounts;
-  _map["statfs"]               = &statfs;
-  _map["statfs_ignore"]        = &statfs_ignore;
-  _map["symlinkify"]           = &symlinkify;
-  _map["symlinkify_timeout"]   = &symlinkify_timeout;
-  _map["threads"]              = &threads;
-  _map["version"]              = &version;
-  _map["xattr"]                = &xattr;
+  _map["async_read"]             = &async_read;
+  _map["auto_cache"]             = &auto_cache;
+  _map["branches"]               = &branches;
+  _map["branches-mount-timeout"] = &branches_mount_timeout;
+  _map["cache.attr"]             = &cache_attr;
+  _map["cache.entry"]            = &cache_entry;
+  _map["cache.files"]            = &cache_files;
+  _map["cache.files.process-names"] = &cache_files_process_names;
+  _map["cache.negative_entry"]   = &cache_negative_entry;
+  _map["cache.readdir"]          = &cache_readdir;
+  _map["cache.statfs"]           = &cache_statfs;
+  _map["cache.symlinks"]         = &cache_symlinks;
+  _map["cache.writeback"]        = &writeback_cache;
+  _map["category.action"]        = &category.action;
+  _map["category.create"]        = &category.create;
+  _map["category.search"]        = &category.search;
+  _map["direct_io"]              = &direct_io;
+  _map["dropcacheonclose"]       = &dropcacheonclose;
+  _map["follow-symlinks"]        = &follow_symlinks;
+  _map["fsname"]                 = &fsname;
+  _map["func.access"]            = &func.access;
+  _map["func.chmod"]             = &func.chmod;
+  _map["func.chown"]             = &func.chown;
+  _map["func.create"]            = &func.create;
+  _map["func.getattr"]           = &func.getattr;
+  _map["func.getxattr"]          = &func.getxattr;
+  _map["func.link"]              = &func.link;
+  _map["func.listxattr"]         = &func.listxattr;
+  _map["func.mkdir"]             = &func.mkdir;
+  _map["func.mknod"]             = &func.mknod;
+  _map["func.open"]              = &func.open;
+  _map["func.readdir"]           = &readdir;
+  _map["func.readlink"]          = &func.readlink;
+  _map["func.removexattr"]       = &func.removexattr;
+  _map["func.rename"]            = &func.rename;
+  _map["func.rmdir"]             = &func.rmdir;
+  _map["func.setxattr"]          = &func.setxattr;
+  _map["func.symlink"]           = &func.symlink;
+  _map["func.truncate"]          = &func.truncate;
+  _map["func.unlink"]            = &func.unlink;
+  _map["func.utimens"]           = &func.utimens;
+  _map["fuse_msg_size"]          = &fuse_msg_size;
+  _map["ignorepponrename"]       = &ignorepponrename;
+  _map["inodecalc"]              = &inodecalc;
+  _map["kernel_cache"]           = &kernel_cache;
+  _map["lazy-umount-mountpoint"] = &lazy_umount_mountpoint;
+  _map["link_cow"]               = &link_cow;
+  _map["link-exdev"]             = &link_exdev;
+  _map["log.metrics"]            = &log_metrics;
+  _map["minfreespace"]           = &minfreespace;
+  _map["mount"]                  = &mountpoint;
+  _map["moveonenospc"]           = &moveonenospc;
+  _map["nfsopenhack"]            = &nfsopenhack;
+  _map["nullrw"]                 = &nullrw;
+  _map["pid"]                    = &pid;
+  _map["parallel-direct-writes"] = &parallel_direct_writes;
+  _map["pin-threads"]            = &fuse_pin_threads;
+  _map["posix_acl"]              = &posix_acl;
+  _map["readahead"]              = &readahead;
+  _map["readdirplus"]            = &readdirplus;
+  _map["rename-exdev"]           = &rename_exdev;
+  _map["scheduling-priority"]    = &scheduling_priority;
+  _map["security_capability"]    = &security_capability;
+  _map["srcmounts"]              = &srcmounts;
+  _map["statfs"]                 = &statfs;
+  _map["statfs_ignore"]          = &statfs_ignore;
+  _map["symlinkify"]             = &symlinkify;
+  _map["symlinkify_timeout"]     = &symlinkify_timeout;
+  _map["threads"]                = &fuse_read_thread_count;
+  _map["read-thread-count"]      = &fuse_read_thread_count;
+  _map["process-thread-count"]   = &fuse_process_thread_count;
+  _map["process-thread-queue-depth"] = &fuse_process_thread_queue_depth;
+  _map["version"]                = &version;
+  _map["xattr"]                  = &xattr;
 }
 
 Config&
@@ -270,7 +299,7 @@ int
 Config::set(const std::string &key_,
             const std::string &value_)
 {
-  if(l::readonly(key_))
+  if(_initialized && l::readonly(key_))
     return -EROFS;
 
   return set_raw(key_,value_);
@@ -343,6 +372,12 @@ Config::from_file(const std::string &filepath_,
   ifstrm.close();
 
   return rv;
+}
+
+void
+Config::finish_initializing()
+{
+  _initialized = true;
 }
 
 std::ostream&

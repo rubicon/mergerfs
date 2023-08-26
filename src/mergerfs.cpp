@@ -14,11 +14,18 @@
   OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 
+#include "fs_readahead.hpp"
+#include "fs_wait_for_mount.hpp"
+#include "syslog.hpp"
+
 #include "fs_path.hpp"
+#include "fs_umount2.hpp"
 #include "mergerfs.hpp"
 #include "option_parser.hpp"
+#include "procfs_get_name.hpp"
 #include "resources.hpp"
 #include "strvec.hpp"
+#include "gidcache.hpp"
 
 #include "fuse_access.hpp"
 #include "fuse_bmap.hpp"
@@ -51,25 +58,30 @@
 #include "fuse_opendir.hpp"
 #include "fuse_poll.hpp"
 #include "fuse_prepare_hide.hpp"
-#include "fuse_read_buf.hpp"
+#include "fuse_read.hpp"
 #include "fuse_readdir.hpp"
 #include "fuse_readdir_plus.hpp"
 #include "fuse_readlink.hpp"
 #include "fuse_release.hpp"
 #include "fuse_releasedir.hpp"
+#include "fuse_removemapping.hpp"
 #include "fuse_removexattr.hpp"
 #include "fuse_rename.hpp"
 #include "fuse_rmdir.hpp"
+#include "fuse_setupmapping.hpp"
 #include "fuse_setxattr.hpp"
 #include "fuse_statfs.hpp"
 #include "fuse_symlink.hpp"
+#include "fuse_syncfs.hpp"
+#include "fuse_tmpfile.hpp"
 #include "fuse_truncate.hpp"
 #include "fuse_unlink.hpp"
 #include "fuse_utimens.hpp"
-#include "fuse_write_buf.hpp"
+#include "fuse_write.hpp"
 
 #include "fuse.h"
 
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 
@@ -114,37 +126,108 @@ namespace l
     ops_.opendir         = FUSE::opendir;
     ops_.poll            = FUSE::poll;;
     ops_.prepare_hide    = FUSE::prepare_hide;
-    ops_.read_buf        = (nullrw_ ? FUSE::read_buf_null : FUSE::read_buf);
+    ops_.read            = (nullrw_ ? FUSE::read_null : FUSE::read);
     ops_.readdir         = FUSE::readdir;
     ops_.readdir_plus    = FUSE::readdir_plus;
     ops_.readlink        = FUSE::readlink;
     ops_.release         = FUSE::release;
     ops_.releasedir      = FUSE::releasedir;
+    ops_.removemapping   = FUSE::removemapping;
     ops_.removexattr     = FUSE::removexattr;
     ops_.rename          = FUSE::rename;
     ops_.rmdir           = FUSE::rmdir;
+    ops_.setupmapping    = FUSE::setupmapping;
     ops_.setxattr        = FUSE::setxattr;
     ops_.statfs          = FUSE::statfs;
     ops_.symlink         = FUSE::symlink;
+    ops_.syncfs          = FUSE::syncfs;
+    ops_.tmpfile         = FUSE::tmpfile;
     ops_.truncate        = FUSE::truncate;
     ops_.unlink          = FUSE::unlink;
     ops_.utimens         = FUSE::utimens;
-    ops_.write_buf       = (nullrw_ ? FUSE::write_buf_null : FUSE::write_buf);
+    ops_.write           = (nullrw_ ? FUSE::write_null : FUSE::write);
 
     return;
   }
 
   static
   void
-  setup_resources(void)
+  setup_resources(const int scheduling_priority_)
   {
-    const int prio = -10;
-
     std::srand(time(NULL));
     resources::reset_umask();
     resources::maxout_rlimit_nofile();
     resources::maxout_rlimit_fsize();
-    resources::setpriority(prio);
+    resources::setpriority(scheduling_priority_);
+  }
+
+  static
+  void
+  wait_for_mount(const Config::Read &cfg_)
+  {
+    fs::PathVector paths;
+    std::chrono::milliseconds timeout;
+
+    paths = cfg_->branches->to_paths();
+
+    syslog_info("Waiting %u seconds for branches to mount",
+                (uint64_t)cfg_->branches_mount_timeout);
+
+    timeout = std::chrono::milliseconds(cfg_->branches_mount_timeout * 1000);
+    fs::wait_for_mount((std::string)cfg_->mountpoint,
+                       paths,
+                       timeout);
+  }
+
+  static
+  void
+  lazy_umount(const std::string target_)
+  {
+    int rv;
+
+    rv = fs::umount_lazy(target_);
+    switch(rv)
+      {
+      case 0:
+        syslog_notice("%s has been successfully lazily unmounted",
+                      target_.c_str());
+        break;
+      case -EINVAL:
+        syslog_notice("%s was not a mount point needing to be unmounted",
+                      target_.c_str());
+        break;
+      default:
+        syslog_error("Error unmounting %s: %d - %s",
+                     target_.c_str(),
+                     -rv,
+                     strerror(-rv));
+        break;
+      }
+  }
+
+  static
+  void
+  usr1_signal_handler(int signal_)
+  {
+    syslog_info("Received SIGUSR1 - invalidating all nodes");
+    fuse_invalidate_all_nodes();
+  }
+
+  static
+  void
+  usr2_signal_handler(int signal_)
+  {
+    syslog_info("Received SIGUSR2 - triggering thorough gc");
+    fuse_gc();
+    GIDCache::invalidate_all_caches();
+  }
+
+  static
+  void
+  setup_signal_handlers()
+  {
+    std::signal(SIGUSR1,l::usr1_signal_handler);
+    std::signal(SIGUSR2,l::usr2_signal_handler);
   }
 
   int
@@ -155,6 +238,8 @@ namespace l
     Config::ErrVec  errs;
     fuse_args       args;
     fuse_operations ops;
+
+    syslog_open();
 
     memset(&ops,0,sizeof(fuse_operations));
 
@@ -169,8 +254,17 @@ namespace l
         return 1;
       }
 
-    l::setup_resources();
+    if(cfg->branches_mount_timeout > 0)
+      l::wait_for_mount(cfg);
+
+    l::setup_resources(cfg->scheduling_priority);
+    l::setup_signal_handlers();
     l::get_fuse_operations(ops,cfg->nullrw);
+
+    if(cfg->lazy_umount_mountpoint)
+      l::lazy_umount(cfg->mountpoint);
+
+    procfs::init();
 
     return fuse_main(args.argc,
                      args.argv,

@@ -21,15 +21,13 @@
 #include "fs_clonepath.hpp"
 #include "fs_open.hpp"
 #include "fs_path.hpp"
+#include "procfs_get_name.hpp"
 #include "ugid.hpp"
 
 #include "fuse.h"
 
 #include <string>
 #include <vector>
-
-using std::string;
-using std::vector;
 
 
 namespace l
@@ -56,6 +54,7 @@ namespace l
   static
   void
   config_to_ffi_flags(Config::Read     &cfg_,
+                      const int         tid_,
                       fuse_file_info_t *ffi_)
   {
     switch(cfg_->cache_files)
@@ -85,15 +84,35 @@ namespace l
         ffi_->keep_cache = 0;
         ffi_->auto_cache = 1;
         break;
+      case CacheFiles::ENUM::PER_PROCESS:
+        std::string proc_name;
+
+        proc_name = procfs::get_name(tid_);
+        if(cfg_->cache_files_process_names.count(proc_name) == 0)
+          {
+            ffi_->direct_io  = 1;
+            ffi_->keep_cache = 0;
+            ffi_->auto_cache = 0;
+          }
+        else
+          {
+            ffi_->direct_io  = 0;
+            ffi_->keep_cache = 0;
+            ffi_->auto_cache = 0;
+          }
+        break;
       }
+
+    if(cfg_->parallel_direct_writes == true)
+      ffi_->parallel_direct_writes = ffi_->direct_io;
   }
 
   static
   int
-  create_core(const string &fullpath_,
-              mode_t        mode_,
-              const mode_t  umask_,
-              const int     flags_)
+  create_core(const std::string &fullpath_,
+              mode_t             mode_,
+              const mode_t       umask_,
+              const int          flags_)
   {
     if(!fs::acl::dir_has_defaults(fullpath_))
       mode_ &= ~umask_;
@@ -103,23 +122,25 @@ namespace l
 
   static
   int
-  create_core(const string &createpath_,
-              const char   *fusepath_,
-              const mode_t  mode_,
-              const mode_t  umask_,
-              const int     flags_,
-              uint64_t     *fh_)
+  create_core(const std::string &createpath_,
+              const char        *fusepath_,
+              fuse_file_info_t  *ffi_,
+              const mode_t       mode_,
+              const mode_t       umask_)
   {
     int rv;
-    string fullpath;
+    FileInfo *fi;
+    std::string fullpath;
 
     fullpath = fs::path::make(createpath_,fusepath_);
 
-    rv = l::create_core(fullpath,mode_,umask_,flags_);
+    rv = l::create_core(fullpath,mode_,umask_,ffi_->flags);
     if(rv == -1)
       return -errno;
 
-    *fh_ = reinterpret_cast<uint64_t>(new FileInfo(rv,fusepath_));
+    fi = new FileInfo(rv,fusepath_,ffi_->direct_io);
+
+    ffi_->fh = reinterpret_cast<uint64_t>(fi);
 
     return 0;
   }
@@ -130,14 +151,13 @@ namespace l
          const Policy::Create &createFunc_,
          const Branches       &branches_,
          const char           *fusepath_,
+         fuse_file_info_t     *ffi_,
          const mode_t          mode_,
-         const mode_t          umask_,
-         const int             flags_,
-         uint64_t             *fh_)
+         const mode_t          umask_)
   {
     int rv;
-    string fullpath;
-    string fusedirpath;
+    std::string fullpath;
+    std::string fusedirpath;
     StrVec createpaths;
     StrVec existingpaths;
 
@@ -157,10 +177,9 @@ namespace l
 
     return l::create_core(createpaths[0],
                           fusepath_,
+                          ffi_,
                           mode_,
-                          umask_,
-                          flags_,
-                          fh_);
+                          umask_);
   }
 }
 
@@ -171,22 +190,35 @@ namespace FUSE
          mode_t            mode_,
          fuse_file_info_t *ffi_)
   {
+    int rv;
     Config::Read cfg;
     const fuse_context *fc = fuse_get_context();
     const ugid::Set     ugid(fc->uid,fc->gid);
 
-    l::config_to_ffi_flags(cfg,ffi_);
+    l::config_to_ffi_flags(cfg,fc->pid,ffi_);
 
     if(cfg->writeback_cache)
       l::tweak_flags_writeback_cache(&ffi_->flags);
 
-    return l::create(cfg->func.getattr.policy,
-                     cfg->func.create.policy,
-                     cfg->branches,
-                     fusepath_,
-                     mode_,
-                     fc->umask,
-                     ffi_->flags,
-                     &ffi_->fh);
+    rv = l::create(cfg->func.getattr.policy,
+                   cfg->func.create.policy,
+                   cfg->branches,
+                   fusepath_,
+                   ffi_,
+                   mode_,
+                   fc->umask);
+    if(rv == -EROFS)
+      {
+        Config::Write()->branches.find_and_set_mode_ro();
+        rv = l::create(cfg->func.getattr.policy,
+                       cfg->func.create.policy,
+                       cfg->branches,
+                       fusepath_,
+                       ffi_,
+                       mode_,
+                       fc->umask);
+      }
+
+    return rv;
   }
 }

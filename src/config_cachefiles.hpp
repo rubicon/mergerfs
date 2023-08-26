@@ -27,7 +27,8 @@ enum class CacheFilesEnum
     OFF,
     PARTIAL,
     FULL,
-    AUTO_FULL
+    AUTO_FULL,
+    PER_PROCESS
   };
 
 typedef Enum<CacheFilesEnum> CacheFiles;

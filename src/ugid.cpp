@@ -28,7 +28,7 @@ namespace ugid
   initgroups(const uid_t uid_,
              const gid_t gid_)
   {
-    static __thread gid_t_cache cache = {0};
+    static thread_local GIDCache cache;
 
     cache.initgroups(uid_,gid_);
   }

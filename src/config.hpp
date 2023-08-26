@@ -25,14 +25,15 @@
 #include "config_log_metrics.hpp"
 #include "config_moveonenospc.hpp"
 #include "config_nfsopenhack.hpp"
-#include "config_readdir.hpp"
 #include "config_rename_exdev.hpp"
+#include "config_set.hpp"
 #include "config_statfs.hpp"
 #include "config_statfsignore.hpp"
 #include "config_xattr.hpp"
 #include "enum.hpp"
 #include "errno.hpp"
 #include "funcs.hpp"
+#include "fuse_readdir.hpp"
 #include "policy.hpp"
 #include "rwlock.hpp"
 #include "tofrom_wrapper.hpp"
@@ -103,9 +104,11 @@ public:
   ConfigBOOL     auto_cache;
   ConfigUINT64   minfreespace;
   Branches       branches;
+  ConfigUINT64   branches_mount_timeout;
   ConfigUINT64   cache_attr;
   ConfigUINT64   cache_entry;
   CacheFiles     cache_files;
+  ConfigSet      cache_files_process_names;
   ConfigUINT64   cache_negative_entry;
   ConfigBOOL     cache_readdir;
   ConfigUINT64   cache_statfs;
@@ -120,28 +123,41 @@ public:
   ConfigBOOL     ignorepponrename;
   InodeCalc      inodecalc;
   ConfigBOOL     kernel_cache;
+  ConfigBOOL     lazy_umount_mountpoint;
   ConfigBOOL     link_cow;
   LinkEXDEV      link_exdev;
   LogMetrics     log_metrics;
-  ConfigSTR      mount;
+  ConfigSTR      mountpoint;
   MoveOnENOSPC   moveonenospc;
   NFSOpenHack    nfsopenhack;
   ConfigBOOL     nullrw;
+  ConfigBOOL     parallel_direct_writes;
   ConfigUINT64   pid;
   ConfigBOOL     posix_acl;
-  ReadDir        readdir;
+  ConfigUINT64   readahead;
+  FUSE::ReadDir  readdir;
   ConfigBOOL     readdirplus;
   RenameEXDEV    rename_exdev;
+  ConfigINT      scheduling_priority;
   ConfigBOOL     security_capability;
   SrcMounts      srcmounts;
   StatFS         statfs;
   StatFSIgnore   statfs_ignore;
   ConfigBOOL     symlinkify;
   ConfigUINT64   symlinkify_timeout;
-  ConfigINT      threads;
+  ConfigINT      fuse_read_thread_count;
+  ConfigINT      fuse_process_thread_count;
+  ConfigINT      fuse_process_thread_queue_depth;
+  ConfigSTR      fuse_pin_threads;
   ConfigSTR      version;
   ConfigBOOL     writeback_cache;
   XAttr          xattr;
+
+private:
+  bool _initialized;
+
+public:
+  void finish_initializing();
 
 public:
   friend std::ostream& operator<<(std::ostream &s,

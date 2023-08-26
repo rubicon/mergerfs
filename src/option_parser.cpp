@@ -14,9 +14,12 @@
   OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 
+#define FMT_HEADER_ONLY
+
 #include "config.hpp"
 #include "ef.hpp"
 #include "errno.hpp"
+#include "fmt/core.h"
 #include "fs_glob.hpp"
 #include "fs_statvfs_cache.hpp"
 #include "hw_cpu.hpp"
@@ -26,6 +29,7 @@
 #include "version.hpp"
 
 #include "fuse.h"
+#include "fuse_config.hpp"
 
 #include <fstream>
 #include <iomanip>
@@ -48,27 +52,6 @@ enum
     MERGERFS_OPT_VERSION
   };
 
-
-namespace l
-{
-  static
-  int
-  calculate_thread_count(int threads_)
-  {
-    int tc;
-
-    if(threads_ > 0)
-      return threads_;
-
-    tc = hw::cpu::logical_core_count();
-    if(threads_ < 0)
-      tc /= -threads_;
-    if(tc == 0)
-      tc = 1;
-
-    return tc;
-  }
-}
 
 static
 void
@@ -95,16 +78,12 @@ set_kv_option(const std::string &key_,
 
 static
 void
-set_threads(Config::Write &cfg_,
-            fuse_args     *args_)
+set_fuse_threads(Config::Write &cfg_)
 {
-  int threads;
-
-  threads = l::calculate_thread_count(cfg_->threads);
-
-  cfg_->threads = threads;
-
-  set_kv_option("threads",cfg_->threads.to_string(),args_);
+  fuse_config_set_read_thread_count(cfg_->fuse_read_thread_count);
+  fuse_config_set_process_thread_count(cfg_->fuse_process_thread_count);
+  fuse_config_set_process_thread_queue_depth(cfg_->fuse_process_thread_queue_depth);
+  fuse_config_set_pin_threads(cfg_->fuse_pin_threads);
 }
 
 static
@@ -140,6 +119,31 @@ set_default_options(fuse_args *args_)
 }
 
 static
+bool
+should_ignore(const std::string &key_)
+{
+  static const std::set<std::string> IGNORED_KEYS =
+    {
+      "allow_other",
+      "atomic_o_trunc",
+      "big_writes",
+      "cache.open",
+      "defaults",
+      "hard_remove",
+      "no_splice_move",
+      "no_splice_read",
+      "no_splice_write",
+      "nonempty",
+      "splice_move",
+      "splice_read",
+      "splice_write",
+      "use_ino",
+    };
+
+  return (IGNORED_KEYS.find(key_) != IGNORED_KEYS.end());
+}
+
+static
 int
 parse_and_process_kv_arg(Config::Write     &cfg_,
                          Config::ErrVec    *errs_,
@@ -169,15 +173,7 @@ parse_and_process_kv_arg(Config::Write     &cfg_,
     val = "true";
   ef(key == "sync_read" && val.empty())
     {key = "async_read", val = "false";}
-  ef(key == "defaults")
-    return 0;
-  ef(key == "hard_remove")
-    return 0;
-  ef(key == "atomic_o_trunc")
-    return 0;
-  ef(key == "big_writes")
-    return 0;
-  ef(key == "cache.open")
+  ef(::should_ignore(key_))
     return 0;
 
   if(cfg_->has_key(key) == false)
@@ -250,6 +246,8 @@ usage(void)
     "    -o [opt,...]           mount options\n"
     "    -h --help              print help\n"
     "    -v --version           print version\n"
+    "    -f                     run mergerfs in foreground\n"
+    "    -d, -o debug           enable debug output (enables -f)\n"
     "\n"
     "mergerfs options:\n"
     "    <branches>             ':' delimited list of directories. Supports\n"
@@ -258,18 +256,31 @@ usage(void)
     "    -o func.FUNC=POLICY    Set function FUNC to policy POLICY\n"
     "    -o category.CAT=POLICY Set functions in category CAT to POLICY\n"
     "    -o fsname=STR          Sets the name of the filesystem.\n"
-    "    -o cache.open=INT      'open' policy cache timeout in seconds.\n"
-    "                           default = 0 (disabled)\n"
+    "    -o read-thread-count=INT\n"
+    "                           Number of threads used to read from FUSE (and process)\n"
+    "                           * 0 = number of logical cores\n"
+    "                           * negative value = number of logical cores / abs(value)\n"
+    "                           * -1 in combination with process-thread-count=-1 will\n"
+    "                           split thread count among read and process threads\n"
+    "                           default=0\n"
+    "    -o process-thread-count=INT\n"
+    "                           Same as read-thread-count but for FUSE message processing\n"
+    "                           If not set then read threads will do both read and process\n"
     "    -o cache.statfs=INT    'statfs' cache timeout in seconds. Used by\n"
     "                           policies. default = 0 (disabled)\n"
-    "    -o cache.files=libfuse|off|partial|full|auto-full\n"
+    "    -o cache.files=libfuse|off|partial|full|auto-full|per-process\n"
     "                           * libfuse: Use direct_io, kernel_cache, auto_cache\n"
     "                             values directly\n"
     "                           * off: Disable page caching\n"
     "                           * partial: Clear page cache on file open\n"
     "                           * full: Keep cache on file open\n"
     "                           * auto-full: Keep cache if mtime & size not changed\n"
+    "                           * per-process: Enable caching for only for processes\n"
+    "                             which comm name match value in cache.files.process-names\n"
     "                           default = libfuse\n"
+    "    -o cache.files.process-names=STRLIST\n"
+    "                           Pipe delimited list of process comm names.\n"
+    "                           defulat=rtorrent|qbittorrent-nox\n"
     "    -o cache.writeback=BOOL\n"
     "                           Enable kernel writeback caching (if supported)\n"
     "                           cache.files must be enabled as well.\n"
@@ -287,8 +298,6 @@ usage(void)
     "    -o cache.negative_entry=INT\n"
     "                           Negative file name lookup cache timeout in\n"
     "                           seconds. default = 0\n"
-    "    -o use_ino             Have mergerfs generate inode values rather than\n"
-    "                           autogenerated by libfuse. Suggested.\n"
     "    -o inodecalc=passthrough|path-hash|devino-hash|hybrid-hash\n"
     "                           Selects the inode calculation algorithm.\n"
     "                           default = hybrid-hash\n"
@@ -383,6 +392,29 @@ option_processor(void       *data_,
   return 0;
 }
 
+static
+void
+check_for_mount_loop(Config::Write  &cfg_,
+                     Config::ErrVec *errs_)
+{
+  fs::Path mount;
+  fs::PathVector branches;
+  std::error_code ec;
+
+  mount    = (std::string)cfg_->mountpoint;
+  branches = cfg_->branches->to_paths();
+  for(const auto &branch : branches)
+    {
+      if(ghc::filesystem::equivalent(branch,mount,ec))
+        {
+          std::string errstr;
+
+          errstr = fmt::format("branches can not include the mountpoint: {}",branch.string());
+          errs_->push_back({0,errstr});
+        }
+    }
+}
+
 namespace options
 {
   void
@@ -407,12 +439,16 @@ namespace options
 
     if(cfg->branches->empty())
       errs_->push_back({0,"branches not set"});
-    if(cfg->mount->empty())
+    if(cfg->mountpoint->empty())
       errs_->push_back({0,"mountpoint not set"});
+
+    check_for_mount_loop(cfg,errs_);
 
     set_default_options(args_);
     set_fsname(cfg,args_);
     set_subtype(args_);
-    set_threads(cfg,args_);
+    set_fuse_threads(cfg);
+
+    cfg->finish_initializing();
   }
 }

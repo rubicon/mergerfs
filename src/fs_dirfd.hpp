@@ -27,8 +27,8 @@ namespace fs
   static
   inline
   int
-  dirfd(DIR *dirp_)
+  dirfd(DIR *dh_)
   {
-    return ::dirfd(dirp_);
+    return ::dirfd(dh_);
   }
 }

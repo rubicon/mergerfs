@@ -84,6 +84,8 @@ struct fuse_file_info_t
 
   uint32_t auto_cache : 1;
 
+  uint32_t parallel_direct_writes:1;
+
   /** File handle.  May be filled in by filesystem in open().
       Available in all other file operations */
   uint64_t fh;
@@ -101,9 +103,6 @@ struct fuse_file_info_t
  * FUSE_CAP_EXPORT_SUPPORT: filesystem handles lookups of "." and ".."
  * FUSE_CAP_BIG_WRITES: filesystem can handle write size larger than 4kB
  * FUSE_CAP_DONT_MASK: don't apply umask to file mode on create operations
- * FUSE_CAP_SPLICE_WRITE: ability to use splice() to write to the fuse device
- * FUSE_CAP_SPLICE_MOVE: ability to move data to the fuse device with splice()
- * FUSE_CAP_SPLICE_READ: ability to use splice() to read from the fuse device
  * FUSE_CAP_IOCTL_DIR: ioctl support on directories
  * FUSE_CAP_CACHE_SYMLINKS: cache READLINK responses
  */
@@ -113,9 +112,6 @@ struct fuse_file_info_t
 #define FUSE_CAP_EXPORT_SUPPORT    (1 << 4)
 #define FUSE_CAP_BIG_WRITES        (1 << 5)
 #define FUSE_CAP_DONT_MASK         (1 << 6)
-#define FUSE_CAP_SPLICE_WRITE      (1 << 7)
-#define FUSE_CAP_SPLICE_MOVE       (1 << 8)
-#define FUSE_CAP_SPLICE_READ       (1 << 9)
 #define FUSE_CAP_FLOCK_LOCKS       (1 << 10)
 #define FUSE_CAP_IOCTL_DIR         (1 << 11)
 #define FUSE_CAP_READDIR_PLUS      (1 << 13)
@@ -126,6 +122,7 @@ struct fuse_file_info_t
 #define FUSE_CAP_POSIX_ACL         (1 << 19)
 #define FUSE_CAP_CACHE_SYMLINKS    (1 << 20)
 #define FUSE_CAP_MAX_PAGES         (1 << 21)
+#define FUSE_CAP_SETXATTR_EXT      (1 << 22)
 
 /**
  * Ioctl flags

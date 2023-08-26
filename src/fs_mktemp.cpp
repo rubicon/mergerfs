@@ -18,61 +18,78 @@
 
 #include "errno.hpp"
 #include "fs_open.hpp"
-
-#include <cstdlib>
-#include <string>
+#include "fs_path.hpp"
+#include "rnd.hpp"
 
 #include <limits.h>
 
-using std::string;
+#include <cstdlib>
+#include <string>
+#include <tuple>
 
-#define PADLEN 6
-#define MAX_ATTEMPTS 10
+#define PAD_LEN             16
+#define MAX_ATTEMPTS        3
+
+static char const   CHARS[]    = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+static size_t const CHARS_SIZE = (sizeof(CHARS) - 1);
 
 
-static
-string
-generate_tmp_path(const string &base_)
+namespace l
 {
-  string tmp;
+  static
+  std::string
+  generate_tmp_path(std::string const base_)
+  {
+    fs::Path path;
+    std::string filename;
 
-  tmp = base_;
-  if((tmp.size() + PADLEN + 1) > PATH_MAX)
-    tmp.resize(tmp.size() - PADLEN - 1);
-  tmp += '.';
-  for(int i = 0; i < PADLEN; i++)
-    tmp += ('A' + (std::rand() % 26));
+    filename  = '.';
+    for(int i = 0; i < PAD_LEN; i++)
+      filename += CHARS[RND::rand64(CHARS_SIZE)];
 
-  return tmp;
+    path = base_;
+    path /= filename;
+
+    return path.string();
+  }
 }
 
 namespace fs
 {
-  int
-  mktemp(string    *base_,
-         const int  flags_)
+  std::tuple<int,std::string>
+  mktemp_in_dir(std::string const dirpath_,
+                int const         flags_)
   {
     int fd;
     int count;
     int flags;
-    string tmppath;
+    std::string tmp_filepath;
 
     fd    = -1;
     count = MAX_ATTEMPTS;
-    flags = (flags_ | O_EXCL | O_CREAT);
+    flags = (flags_ | O_EXCL | O_CREAT | O_TRUNC);
     while(count-- > 0)
       {
-        tmppath = generate_tmp_path(*base_);
+        tmp_filepath = l::generate_tmp_path(dirpath_);
 
-        fd = fs::open(tmppath,flags,S_IWUSR);
+        fd = fs::open(tmp_filepath,flags,S_IWUSR);
         if((fd == -1) && (errno == EEXIST))
           continue;
-        else if(fd != -1)
-          *base_ = tmppath;
+        if(fd == -1)
+          return std::make_tuple(-errno,std::string());
 
-        return fd;
+        return std::make_tuple(fd,tmp_filepath);
       }
 
-    return (errno=EEXIST,-1);
+    return std::make_tuple(-EEXIST,std::string());
+  }
+
+  std::tuple<int,std::string>
+  mktemp(std::string const filepath_,
+         int const         flags_)
+  {
+    ghc::filesystem::path filepath{filepath_};
+
+    return fs::mktemp_in_dir(filepath.parent_path(),flags_);
   }
 }

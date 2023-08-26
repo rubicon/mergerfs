@@ -326,7 +326,7 @@ namespace l
                                               st_,
                                               timeouts_);
       case LinkEXDEV::ENUM::ABS_POOL_SYMLINK:
-        return l::link_exdev_abs_pool_symlink(cfg_->mount,
+        return l::link_exdev_abs_pool_symlink(cfg_->mountpoint,
                                               oldpath_,
                                               newpath_,
                                               st_,
@@ -352,7 +352,7 @@ namespace FUSE
 
     rv = l::link(cfg,oldpath_,newpath_,st_,timeouts_);
     if(rv == -EXDEV)
-      return l::link_exdev(cfg,oldpath_,newpath_,st_,timeouts_);
+      rv = l::link_exdev(cfg,oldpath_,newpath_,st_,timeouts_);
 
     return rv;
   }

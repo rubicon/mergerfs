@@ -21,10 +21,12 @@
 #include "errno.hpp"
 #include "from_string.hpp"
 #include "fs_glob.hpp"
+#include "fs_is_rofs.hpp"
 #include "fs_realpathize.hpp"
 #include "nonstd/optional.hpp"
 #include "num.hpp"
 #include "str.hpp"
+#include "syslog.hpp"
 
 #include <string>
 
@@ -80,11 +82,14 @@ namespace l
     uint64_t offset;
 
     offset = s_.find_first_not_of("+<>-=");
+    if (offset == std::string::npos) {
+      return;
+    }
+
     if(offset > 1)
       offset = 2;
     *instr_ = s_.substr(0,offset);
-    if(offset != std::string::npos)
-      *values_ = s_.substr(offset);
+    *values_ = s_.substr(offset);
   }
 
   static
@@ -185,6 +190,9 @@ namespace l
       branch.set_minfreespace(minfreespace.value());
 
     fs::glob(glob,&paths);
+    if(paths.empty())
+      paths.push_back(glob);
+
     fs::realpathize(&paths);
     for(auto &path : paths)
       {
@@ -363,6 +371,17 @@ Branches::Impl::to_paths(StrVec &paths_) const
     }
 }
 
+fs::PathVector
+Branches::Impl::to_paths() const
+{
+  fs::PathVector vp;
+
+  for(const auto &branch : *this)
+    vp.emplace_back(branch.path);
+
+  return vp;
+}
+
 int
 Branches::from_string(const std::string &str_)
 {
@@ -398,6 +417,24 @@ Branches::to_string(void) const
   return _impl->to_string();
 }
 
+void
+Branches::find_and_set_mode_ro()
+{
+  for(auto &branch : *_impl)
+    {
+      if(branch.mode != Branch::Mode::RW)
+        continue;
+
+      if(!fs::is_rofs_but_not_mounted_ro(branch.path))
+        continue;
+
+      syslog_warning("Branch %s found to be readonly - setting its mode to RO",
+                     branch.path.c_str());
+
+      branch.mode = Branch::Mode::RO;
+    }
+}
+
 SrcMounts::SrcMounts(Branches &b_)
   : _branches(b_)
 {
@@ -407,7 +444,8 @@ SrcMounts::SrcMounts(Branches &b_)
 int
 SrcMounts::from_string(const std::string &s_)
 {
-  return _branches.from_string(s_);
+  //  return _branches.from_string(s_);
+  return 0;
 }
 
 std::string
